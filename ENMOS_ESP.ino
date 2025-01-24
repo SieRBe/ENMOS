@@ -3,43 +3,15 @@
 #include <Ticker.h>
 #include <AsyncMqttClient.h>
 
-//Konfigurasi Wifi
-//#define WIFI_SSID "DEQA"
-//#define WIFI_PASSWORD "westhoff"
-//#define WIFI_SSID "ENMOS-LT1"
-//#define WIFI_PASSWORD "Gnocchipomodoro24"
-//#define Username "brokerTTH"
-//#define Password "brokerTTH"
+#define WIFI_SSID "id"        // Ganti dengan nama WiFi Anda
+#define WIFI_PASSWORD "pw" // Ganti dengan password WiFi Anda
 
-#define WIFI_SSID "lime"        // Ganti dengan nama WiFi Anda
-#define WIFI_PASSWORD "00000000" // Ganti dengan password WiFi Anda
-
-//Static IP address configuration
-//IPAddress staticIP(192, 168, 0, 17); //ESP static ip   192.168.10.186
-//IPAddress gateway(192, 168, 0, 1);   //IP Address of your WiFi Router (Gateway) 10.128.192.1
-//IPAddress subnet(255, 255, 255, 0);  //Subnet mask
-//IPAddress dns(8, 8, 8, 8);  //DNS
 const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
 const char* mqtt_user = "";  // Optional
 const char* mqtt_password = "";  // Optional
 
 SoftwareSerial DataSerial(12, 13);
-
-// MQTT Broker address
-//#define MQTT_HOST IPAddress(broker.hivemq.com)
-//#define MQTT_HOST "broker.hivemq.com"
-//MQTT port
-//#define MQTT_PORT 1884
-
-
-// MQTT Topics
-//#define MQTT_PUB_RECORD "ENMOSV2/records"
-//#define MQTT_PUB_TEMP "ENMOSV2/hmIOhmMOnXQ2ejIP1gohn5yOlTUs8O/resource/temp"
-//#define MQTT_PUB_HUM  "ENMOSV2/hmIOhmMOnXQ2ejIP1gohn5yOlTUs8O/resource/hum"
-//#define MQTT_PUB_VOLT "ENMOSV2/hmIOhmMOnXQ2ejIP1gohn5yOlTUs8O/resource/volt" 
-//#define MQTT_PUB_FREQ "ENMOSV2/hmIOhmMOnXQ2ejIP1gohn5yOlTUs8O/resource/freq"
-//#define MQTT_PUB_WARNING "ENMOSV2/Warning"
 
 const char* topic_voltage = "voltage_data";
 const char* topic_frequency = "frequency_data";
@@ -202,15 +174,11 @@ warning = "High Voltage : " + voltage;
       frequency  = arrData[2];
       temperature  = arrData[3];
       humidity   = arrData[4];
-      //Name_ID = "hmIOhmMOnXQ2ejIP1gohn5yOlTUs8O";
-      //warning = "Perangkat terhubung";
-      
-
+  
       volt1 = arrData[1].toFloat();
       freq1 = arrData[2].toFloat();
       temp1 = arrData[3].toFloat();
       hum1 = arrData[4].toFloat();
-
 
       unsigned long currentMillis = millis();
       // Every X number of seconds (interval = 10 seconds)
@@ -239,15 +207,6 @@ warning = "High Voltage : " + voltage;
         Serial.printf("Publishing on topic %s at QoS 1, packetId: %i", topic_humidity, packetIdPub4);
         Serial.printf("Message: %.2f \n", data_hum.c_str());
 
-        //String data_record = Name_ID + "#" + temp + "#" + volt + "#" + freq + "#" + hum;
-        //uint16_t packetIdPub5 = mqttClient.publish(MQTT_PUB_RECORD, 1, true, data_record.c_str());
-        //Serial.printf("Publishing on topic %s at QoS 1, packetId: %i", MQTT_PUB_RECORD, packetIdPub5);
-        //Serial.printf("Message: %.2f \n", data_record.c_str());
-
-        //String data_warning = Name_ID + "#" + warning ;
-        //uint16_t packetIdPub6 = mqttClient.publish(MQTT_PUB_WARNING, 1, true, data_warning.c_str());
-        //Serial.printf("Publishing on topic %s at QoS 1, packetId: %i", MQTT_PUB_WARNING, packetIdPub6);
-        //Serial.printf("Message: %.2f \n", data_warning.c_str());
       }
     }
 
