@@ -1,3 +1,4 @@
+#include <TFT_eSPI.h>
 #include <SD.h>
 #include <SPI.h>
 #include <SoftwareSerial.h>
@@ -6,20 +7,20 @@
 #include "RTC_SAMD51.h"
 #include "DateTime.h"
 #include "Wire.h"
-#include <TFT_eSPI.h> 
 
+TFT_eSPI tft = TFT_eSPI();
 RTC_SAMD51 rtc;
 SHT31 sht;
 SoftwareSerial serial(D2, D3);      // For data transmission
 SoftwareSerial SerialMod(D1, D0);   // For Modbus
 ModbusMaster node;
 
+bool wifiStatus = false;
+
 typedef struct {
   float V;
   float F;
 } READING;
-
-TFT_eSPI tft = TFT_eSPI();
 
 unsigned long previousMillis2 = 0;
 const long INTERVAL = 11100;  // Interval for data transmission
@@ -28,12 +29,18 @@ void setup() {
   Serial.begin(115200);
   serial.begin(19200);
   SerialMod.begin(9600);
+
+ tft.init();
+  tft.setRotation(3);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
   
   Wire.begin();
   sht.begin(0x44);    // SHT31 I2C Address
   rtc.begin();
   
-  DateTime now = DateTime(F(_DATE), F(TIME_));
+  DateTime now = DateTime(F(__DATE__), F(__TIME__));
   rtc.adjust(now);
   
   node.begin(17, SerialMod);
@@ -44,43 +51,34 @@ void setup() {
     return;
   }
   Serial.println("SD card initialized.");
-  
-  tft.init();
-  tft.setRotation(3);
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(2);
 }
 
+void updateWiFiStatus() {
+  // Draw WiFi status icon/text
+  tft.setCursor(0, 0);
+  tft.setTextColor(wifiStatus ? TFT_GREEN : TFT_RED, TFT_BLACK);
+  tft.print("WiFi: ");
+  tft.println(wifiStatus ? "Connected" : "Disconnected");
+}
 
 void loop() {
-   if (serial.available()) {
-    String wifiStatus = serial.readStringUntil('\n');
-    
-    if (wifiStatus.startsWith("WIFI:")) {
-      int status = wifiStatus.substring(5).toInt();
-      
-      // Clear previous status
-      tft.fillRect(0, 0, tft.width(), 50, TFT_BLACK);
-      
-      // Display WiFi status
-      tft.setCursor(10, 10);
-      if (status == 1) {
-        tft.setTextColor(TFT_GREEN);
-        tft.print("WiFi: Connected");
-      } else {
-        tft.setTextColor(TFT_RED);
-        tft.print("WiFi: Disconnected");
-      }
-    }
-  }
-  
   // Read sensors
   sht.read();
   float temperature = sht.getTemperature();
   float humidity = sht.getHumidity();
   
   DateTime now = rtc.now();
+
+if (serial.available()) {
+    String wifiMessage = serial.readStringUntil('\n');
+    if (wifiMessage.startsWith("WIFI:")) {
+      wifiStatus = (wifiMessage.substring(5) == "1");
+      
+      // Optional: Display or log WiFi status
+      Serial.print("WiFi Status: ");
+      Serial.println(wifiStatus ? "Connected" : "Disconnected");
+    }
+  }
   
   // Read Modbus data
   READING r;
