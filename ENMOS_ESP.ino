@@ -70,6 +70,26 @@ void onMqttPublish(uint16_t packetId) {
   Serial.println(packetId);
 }
 
+void handleIncomingData() {
+  if (Serial.available()) {
+    String data = Serial.readStringUntil('\n');
+    data.trim();
+    
+    if (data == "CHECK_WIFI") {
+      Serial.print("WIFI:");
+      Serial.println(WiFi.status() == WL_CONNECTED ? "1" : "0");
+    }
+    else if (data.startsWith("DATA#")) {
+      // Coba kirim ke server
+      if (sendToServer(data)) {
+        Serial.println("ACK");  // Konfirmasi data berhasil dikirim
+      } else {
+        Serial.println("NACK"); // Beritahu WIO untuk mencoba lagi
+      }
+    }
+  }
+}
+
 String arrData[3];
 
 String voltage, frequency, temperature, humidity, Name_ID, warning;
