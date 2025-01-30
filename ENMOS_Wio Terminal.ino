@@ -45,7 +45,7 @@ void setup() {
   rtc.begin();
   
   // Set RTC time from compilation
-  DateTime now = DateTime(F(__DATE__), F(__TIME__));
+  DateTime now = DateTime(F(_DATE), F(TIME_));
   rtc.adjust(now);
   
   // Initialize Modbus
@@ -226,3 +226,10 @@ void checkESPStatus() {
     Serial.println("ESP connection timed out");
   }
 }
+
+
+Dengan revisi ini, data akan:
+1. Tersimpan ke CSV terlebih dahulu
+2. Dibaca dan dikirim ke ESP setelahnya
+3. Dihapus dari CSV setelah berhasil dikirim
+4. Data yang belum terkirim tetap aman tersimpan di CSV
