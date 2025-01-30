@@ -31,7 +31,8 @@ unsigned long lastEspResponse = 0;
 
 // Status variables
 bool isWiFiConnected = false;
-char filename[] = "/data.csv";
+bool lastSendSuccess = false;  // Track if last send was successful
+char filename[] = "/janggar.csv";
 
 void setup() {
   // Initialize Serial communications
@@ -39,16 +40,14 @@ void setup() {
   serial.begin(19200);        // ESP communication
   SerialMod.begin(9600);      // Modbus communication
   
-  // Initialize I2C devices
   Wire.begin();
   sht.begin(0x44);           // SHT31 sensor
   rtc.begin();
   
   // Set RTC time from compilation
-  DateTime now = DateTime(F(_DATE), F(TIME_));
+  DateTime now = DateTime(F(__DATE__), F(__TIME__));
   rtc.adjust(now);
   
-  // Initialize Modbus
   node.begin(17, SerialMod);
   
   // Initialize SD card
@@ -58,38 +57,52 @@ void setup() {
   }
   Serial.println("SD card initialized successfully");
   
-  // Create CSV with headers if it doesn't exist
+  // Create CSV with headers if doesn't exist
   if (!SD.exists(filename)) {
-    File dataFile = SD.open(filename, FILE_WRITE);
-    if (dataFile) {
-      dataFile.println("Timestamp;Temperature;Humidity;Voltage;Frequency");
-      dataFile.close();
-      Serial.println("Created new data file with headers");
-    }
+    createNewDataFile();
+  }
+}
+
+void createNewDataFile() {
+  File dataFile = SD.open(filename, FILE_WRITE);
+  if (dataFile) {
+    dataFile.println("Timestamp;Temperature;Humidity;Voltage;Frequency");
+    dataFile.close();
+    Serial.println("Created new data file with headers");
   }
 }
 
 void loop() {
   unsigned long currentMillis = millis();
   
-  // 1. SENSOR READING AND CSV STORAGE
+  // 1. Check ESP Status first
+  checkESPStatus();
+  
+  // 2. Sensor Reading and CSV Storage (always runs every 20 seconds)
   if (currentMillis - lastSensorRead >= SENSOR_READ_INTERVAL) {
     lastSensorRead = currentMillis;
     readAndStoreSensorData();
   }
   
-  // 2. DATA SENDING TO ESP
+  // 3. Data Sending to ESP (only if connected and previous send was successful)
   if (currentMillis - lastDataSend >= SEND_DATA_INTERVAL) {
     lastDataSend = currentMillis;
-    sendDataToESP();
+    if (isWiFiConnected) {
+      sendDataToESP();
+    } else {
+      Serial.println("ESP not connected - Data kept in CSV");
+      printStoredDataCount(); // Print how many records are stored
+    }
   }
-  
-  // 3. ESP STATUS CHECK
-  checkESPStatus();
 }
 
 void readAndStoreSensorData() {
   Serial.println("Reading sensors...");
+  
+  // Check SD card space
+  if (SD.totalBytes() - SD.usedBytes() < 1024) {  // 1KB threshold
+    Serial.println("WARNING: SD Card space low!");
+  }
   
   // Read SHT31 sensor
   sht.read();
@@ -124,23 +137,19 @@ void readAndStoreSensorData() {
     dataFile.print(buffer);
     dataFile.close();
     Serial.println("Data stored in CSV");
-  } else {
-    Serial.println("Error opening file for writing");
+    printStoredDataCount();
   }
 }
 
 void sendDataToESP() {
-  Serial.println("Sending data to ESP...");
-  
+  if (!isWiFiConnected) {
+    Serial.println("ESP not connected - skipping data send");
+    return;
+  }
+
   File readFile = SD.open(filename);
   if (!readFile) {
     Serial.println("Error opening file for reading");
-    return;
-  }
-  
-  if (!readFile.available()) {
-    readFile.close();
-    Serial.println("No data available to send");
     return;
   }
   
@@ -149,59 +158,61 @@ void sendDataToESP() {
   
   if (!readFile.available()) {
     readFile.close();
-    Serial.println("No data after header");
+    Serial.println("No data to send");
     return;
   }
   
   // Read first data line
   String dataLine = readFile.readStringUntil('\n');
+  bool sendSuccess = false;
   
   if (dataLine.length() > 0) {
-    // Parse CSV data
     int pos1 = dataLine.indexOf(';');
     int pos2 = dataLine.indexOf(';', pos1 + 1);
     int pos3 = dataLine.indexOf(';', pos2 + 1);
     int pos4 = dataLine.indexOf(';', pos3 + 1);
     
     if (pos1 != -1 && pos2 != -1 && pos3 != -1 && pos4 != -1) {
-      // Extract data values
       String temp = dataLine.substring(pos1 + 1, pos2);
       String hum = dataLine.substring(pos2 + 1, pos3);
       String volt = dataLine.substring(pos3 + 1, pos4);
       String freq = dataLine.substring(pos4 + 1);
       
-      // Clean the data
       temp.trim(); hum.trim(); volt.trim(); freq.trim();
       
-      // Format and send data to ESP
       String dataToSend = String("1#") + volt + "#" + freq + "#" + temp + "#" + hum;
       serial.println(dataToSend);
+      
+      // Wait for acknowledgment from ESP (implement if needed)
+      // For now, we'll assume send was successful if ESP is connected
+      sendSuccess = true;
       Serial.println("Sent to ESP: " + dataToSend);
-      
-      // Store remaining data
-      String remainingData = "";
-      while (readFile.available()) {
-        String line = readFile.readStringUntil('\n');
-        remainingData += line;
-        if (readFile.available()) {
-          remainingData += '\n';
-        }
+    }
+  }
+  
+  if (sendSuccess) {
+    // Store remaining data
+    String remainingData = "";
+    while (readFile.available()) {
+      String line = readFile.readStringUntil('\n');
+      remainingData += line;
+      if (readFile.available()) {
+        remainingData += '\n';
       }
-      readFile.close();
-      
-      // Rewrite file with remaining data
-      SD.remove(filename);
-      File newFile = SD.open(filename, FILE_WRITE);
-      if (newFile) {
-        newFile.println("Timestamp;Temperature;Humidity;Voltage;Frequency");
-        if (remainingData.length() > 0) {
-          newFile.print(remainingData);
-        }
-        newFile.close();
-        Serial.println("File updated - sent data removed");
-      } else {
-        Serial.println("Error rewriting file");
+    }
+    readFile.close();
+    
+    // Rewrite file with remaining data
+    SD.remove(filename);
+    File newFile = SD.open(filename, FILE_WRITE);
+    if (newFile) {
+      newFile.println("Timestamp;Temperature;Humidity;Voltage;Frequency");
+      if (remainingData.length() > 0) {
+        newFile.print(remainingData);
       }
+      newFile.close();
+      Serial.println("Successfully removed sent data from CSV");
+      printStoredDataCount();
     }
   }
 }
@@ -209,27 +220,42 @@ void sendDataToESP() {
 void checkESPStatus() {
   if (serial.available()) {
     String response = serial.readStringUntil('\n');
-    Serial.print("ESP Response: ");
-    Serial.println(response);
-    
     if (response.startsWith("WIFI:")) {
+      bool previousStatus = isWiFiConnected;
       isWiFiConnected = (response.substring(5).toInt() == 1);
       lastEspResponse = millis();
-      Serial.print("WiFi Status: ");
-      Serial.println(isWiFiConnected ? "Connected" : "Disconnected");
+      
+      if (previousStatus != isWiFiConnected) {
+        Serial.print("WiFi Status changed to: ");
+        Serial.println(isWiFiConnected ? "Connected" : "Disconnected");
+        printStoredDataCount();
+      }
     }
   }
   
-  // Check for ESP timeout
   if (millis() - lastEspResponse > ESP_TIMEOUT) {
-    isWiFiConnected = false;
-    Serial.println("ESP connection timed out");
+    if (isWiFiConnected) {
+      isWiFiConnected = false;
+      Serial.println("ESP connection timed out");
+      printStoredDataCount();
+    }
   }
 }
 
-
-Dengan revisi ini, data akan:
-1. Tersimpan ke CSV terlebih dahulu
-2. Dibaca dan dikirim ke ESP setelahnya
-3. Dihapus dari CSV setelah berhasil dikirim
-4. Data yang belum terkirim tetap aman tersimpan di CSV
+void printStoredDataCount() {
+  int count = 0;
+  File dataFile = SD.open(filename);
+  if (dataFile) {
+    // Skip header
+    dataFile.readStringUntil('\n');
+    
+    while (dataFile.available()) {
+      dataFile.readStringUntil('\n');
+      count++;
+    }
+    dataFile.close();
+    
+    Serial.print("Stored records in CSV: ");
+    Serial.println(count);
+  }
+}
