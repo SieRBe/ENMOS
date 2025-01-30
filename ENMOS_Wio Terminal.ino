@@ -6,33 +6,37 @@
 #include "RTC_SAMD51.h"
 #include "DateTime.h"
 #include "Wire.h"
-#include <WiFi.h>
 
 // Initialize objects
 RTC_SAMD51 rtc;
 SHT31 sht;
-SoftwareSerial serial(D2, D3);      // For ESP communication
+SoftwareSerial serial(D2, D3);      
+// For ESP communication
 SoftwareSerial SerialMod(D1, D0);   // For Modbus
 ModbusMaster node;
-
 // Structure for Modbus readings
+} READING;
 typedef struct {
   float V;  // Voltage
   float F;  // Frequency
-} READING;
 
 // Timing variables
 const long SENSOR_READ_INTERVAL = 20000;    // 20 seconds for sensor reading
 const long SEND_DATA_INTERVAL = 21000;      // 21 seconds for data sending
+const long WIFI_CHECK_INTERVAL = 5000;      // 5 seconds for WiFi check
 const unsigned long ESP_TIMEOUT = 5000;     // 5 seconds ESP timeout
+const unsigned long ACK_TIMEOUT = 5000;     // 5 seconds ACK timeout
 unsigned long lastSensorRead = 0;
 unsigned long lastDataSend = 0;
 unsigned long lastEspResponse = 0;
+unsigned long lastWiFiCheck = 0;
+unsigned long lastSendAttempt = 0;
 
 // Status variables
-bool isWiFiConnected = false;
-bool lastSendSuccess = false;  // Track if last send was successful
-char filename[] = "/janggar.csv";
+bool isESPWiFiConnected = false;
+bool waitingForAck = false;
+String lastSentData = "";
+char filename[] = "/prabroro.csv";
 
 void setup() {
   // Initialize Serial communications
@@ -40,6 +44,7 @@ void setup() {
   serial.begin(19200);        // ESP communication
   SerialMod.begin(9600);      // Modbus communication
   
+  // Initialize I2C devices
   Wire.begin();
   sht.begin(0x44);           // SHT31 sensor
   rtc.begin();
@@ -48,6 +53,7 @@ void setup() {
   DateTime now = DateTime(F(__DATE__), F(__TIME__));
   rtc.adjust(now);
   
+  // Initialize Modbus
   node.begin(17, SerialMod);
   
   // Initialize SD card
@@ -57,52 +63,44 @@ void setup() {
   }
   Serial.println("SD card initialized successfully");
   
-  // Create CSV with headers if doesn't exist
+  // Create CSV with headers if it doesn't exist
   if (!SD.exists(filename)) {
-    createNewDataFile();
-  }
-}
-
-void createNewDataFile() {
-  File dataFile = SD.open(filename, FILE_WRITE);
-  if (dataFile) {
-    dataFile.println("Timestamp;Temperature;Humidity;Voltage;Frequency");
-    dataFile.close();
-    Serial.println("Created new data file with headers");
+    File dataFile = SD.open(filename, FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Timestamp;Temperature;Humidity;Voltage;Frequency");
+      dataFile.close();
+      Serial.println("Created new data file with headers");
+    }
   }
 }
 
 void loop() {
   unsigned long currentMillis = millis();
   
-  // 1. Check ESP Status first
-  checkESPStatus();
-  
-  // 2. Sensor Reading and CSV Storage (always runs every 20 seconds)
+  // 1. SENSOR READING AND CSV STORAGE
   if (currentMillis - lastSensorRead >= SENSOR_READ_INTERVAL) {
     lastSensorRead = currentMillis;
     readAndStoreSensorData();
   }
   
-  // 3. Data Sending to ESP (only if connected and previous send was successful)
+  // 2. CHECK ESP WIFI STATUS
+  if (currentMillis - lastWiFiCheck >= WIFI_CHECK_INTERVAL) {
+    lastWiFiCheck = currentMillis;
+    checkESPWiFiStatus();
+  }
+  
+  // 3. DATA SENDING TO ESP
   if (currentMillis - lastDataSend >= SEND_DATA_INTERVAL) {
     lastDataSend = currentMillis;
-    if (isWiFiConnected) {
-      sendDataToESP();
-    } else {
-      Serial.println("ESP not connected - Data kept in CSV");
-      printStoredDataCount(); // Print how many records are stored
-    }
+    sendDataToESP();
   }
+  
+  // 4. CHECK FOR ESP RESPONSES
+  handleESPResponse();
 }
 
 void readAndStoreSensorData() {
   Serial.println("Reading sensors...");
-  
-  // Check SD card space
-  if (SD.totalBytes() - SD.usedBytes() < 1024) {  // 1KB threshold
-    Serial.println("WARNING: SD Card space low!");
-  }
   
   // Read SHT31 sensor
   sht.read();
@@ -137,36 +135,74 @@ void readAndStoreSensorData() {
     dataFile.print(buffer);
     dataFile.close();
     Serial.println("Data stored in CSV");
-    printStoredDataCount();
+  } else {
+    Serial.println("Error opening file for writing");
+  }
+}
+
+void checkESPWiFiStatus() {
+  // Request WiFi status from ESP
+  serial.println("CHECK_WIFI");
+  
+  // Wait for response with timeout
+  unsigned long startTime = millis();
+  while (!serial.available() && millis() - startTime < 1000) {
+    // Wait for up to 1 second
+  }
+  
+  if (serial.available()) {
+    String response = serial.readStringUntil('\n');
+    response.trim();
+    
+    if (response.startsWith("WIFI:")) {
+      isESPWiFiConnected = (response.substring(5).toInt() == 1);
+      lastEspResponse = millis();
+      Serial.print("ESP WiFi Status: ");
+      Serial.println(isESPWiFiConnected ? "Connected" : "Disconnected");
+    }
+  } else {
+    // No response from ESP
+    isESPWiFiConnected = false;
+    Serial.println("No response from ESP - assuming disconnected");
   }
 }
 
 void sendDataToESP() {
-  if (!isWiFiConnected) {
-    Serial.println("ESP not connected - skipping data send");
-    return;
+  // Jika sedang menunggu ACK, cek timeout
+  if (waitingForAck) {
+    if (millis() - lastSendAttempt > ACK_TIMEOUT) {
+      Serial.println("ACK timeout - retrying");
+      waitingForAck = false;
+    } else {
+      return; // Masih menunggu ACK, jangan kirim data baru
+    }
   }
 
+  if (!isESPWiFiConnected) {
+    Serial.println("ESP WiFi disconnected - skipping data transmission");
+    return;
+  }
+  
   File readFile = SD.open(filename);
-  if (!readFile) {
-    Serial.println("Error opening file for reading");
+  if (!readFile || !readFile.available()) {
+    if (readFile) readFile.close();
     return;
   }
   
   // Skip header
-  String header = readFile.readStringUntil('\n');
+  readFile.readStringUntil('\n');
   
   if (!readFile.available()) {
     readFile.close();
-    Serial.println("No data to send");
     return;
   }
   
-  // Read first data line
+  // Baca data pertama
   String dataLine = readFile.readStringUntil('\n');
-  bool sendSuccess = false;
+  readFile.close();
   
   if (dataLine.length() > 0) {
+    // Parse CSV data
     int pos1 = dataLine.indexOf(';');
     int pos2 = dataLine.indexOf(';', pos1 + 1);
     int pos3 = dataLine.indexOf(';', pos2 + 1);
@@ -180,82 +216,72 @@ void sendDataToESP() {
       
       temp.trim(); hum.trim(); volt.trim(); freq.trim();
       
-      String dataToSend = String("1#") + volt + "#" + freq + "#" + temp + "#" + hum;
+      // Format dan kirim dengan ID
+      String dataToSend = String("DATA#") + volt + "#" + freq + "#" + temp + "#" + hum;
       serial.println(dataToSend);
       
-      // Wait for acknowledgment from ESP (implement if needed)
-      // For now, we'll assume send was successful if ESP is connected
-      sendSuccess = true;
-      Serial.println("Sent to ESP: " + dataToSend);
-    }
-  }
-  
-  if (sendSuccess) {
-    // Store remaining data
-    String remainingData = "";
-    while (readFile.available()) {
-      String line = readFile.readStringUntil('\n');
-      remainingData += line;
-      if (readFile.available()) {
-        remainingData += '\n';
-      }
-    }
-    readFile.close();
-    
-    // Rewrite file with remaining data
-    SD.remove(filename);
-    File newFile = SD.open(filename, FILE_WRITE);
-    if (newFile) {
-      newFile.println("Timestamp;Temperature;Humidity;Voltage;Frequency");
-      if (remainingData.length() > 0) {
-        newFile.print(remainingData);
-      }
-      newFile.close();
-      Serial.println("Successfully removed sent data from CSV");
-      printStoredDataCount();
+      // Simpan data yang dikirim dan set status waiting
+      lastSentData = dataLine;
+      waitingForAck = true;
+      lastSendAttempt = millis();
+      
+      Serial.println("Data sent to ESP, waiting for ACK");
     }
   }
 }
 
-void checkESPStatus() {
+void handleESPResponse() {
   if (serial.available()) {
     String response = serial.readStringUntil('\n');
+    response.trim();
+    
     if (response.startsWith("WIFI:")) {
-      bool previousStatus = isWiFiConnected;
-      isWiFiConnected = (response.substring(5).toInt() == 1);
+      isESPWiFiConnected = (response.substring(5).toInt() == 1);
       lastEspResponse = millis();
-      
-      if (previousStatus != isWiFiConnected) {
-        Serial.print("WiFi Status changed to: ");
-        Serial.println(isWiFiConnected ? "Connected" : "Disconnected");
-        printStoredDataCount();
+      Serial.print("ESP WiFi Status: ");
+      Serial.println(isESPWiFiConnected ? "Connected" : "Disconnected");
+    }
+    else if (response == "ACK") {
+      if (waitingForAck) {
+        Serial.println("ACK received - removing sent data");
+        removeAcknowledgedData();
+        waitingForAck = false;
       }
     }
-  }
-  
-  if (millis() - lastEspResponse > ESP_TIMEOUT) {
-    if (isWiFiConnected) {
-      isWiFiConnected = false;
-      Serial.println("ESP connection timed out");
-      printStoredDataCount();
+    else if (response == "NACK") {
+      Serial.println("NACK received - will retry");
+      waitingForAck = false;
     }
   }
 }
 
-void printStoredDataCount() {
-  int count = 0;
-  File dataFile = SD.open(filename);
-  if (dataFile) {
-    // Skip header
-    dataFile.readStringUntil('\n');
-    
-    while (dataFile.available()) {
-      dataFile.readStringUntil('\n');
-      count++;
+void removeAcknowledgedData() {
+  if (lastSentData.length() == 0) return;
+  
+  File readFile = SD.open(filename);
+  if (!readFile) return;
+  
+  // Baca semua data kecuali yang sudah terkirim
+  String newContent = "";
+  String header = readFile.readStringUntil('\n');
+  newContent = header + "\n";
+  
+  while (readFile.available()) {
+    String line = readFile.readStringUntil('\n');
+    if (line != lastSentData) {
+      newContent += line + "\n";
     }
-    dataFile.close();
-    
-    Serial.print("Stored records in CSV: ");
-    Serial.println(count);
   }
+  readFile.close();
+  
+  // Tulis ulang file
+  SD.remove(filename);
+  File writeFile = SD.open(filename, FILE_WRITE);
+  if (writeFile) {
+    writeFile.print(newContent);
+    writeFile.close();
+    Serial.println("File updated after ACK");
+  }
+  
+  lastSentData = ""; // Reset sent data
 }
