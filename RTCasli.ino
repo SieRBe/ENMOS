@@ -6,14 +6,24 @@
 #include <rpcWiFi.h>
 #include "TFT_eSPI.h"
 #include "Free_Fonts.h"
-#include <RTClib.h>  // Add RTC library
-#include <NTPClient.h>
-#include <WiFiUdp.h>
+#include <RTC_SAMD51.h>
+#include <DateTime.h>
+#include <NTP.h>
 
 // Display setup
 TFT_eSPI tft;
 TFT_eSprite spr = TFT_eSprite(&tft);
 #define LCD_BACKLIGHT (72Ul)
+
+// RTC setup
+RTC_SAMD51 rtc;
+bool rtcSynced = false;
+
+// NTP setup
+NTP ntp(7); // UTC+7 for Indonesia
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 25200;     // UTC+7 in seconds
+const int daylightOffset_sec = 0;
 
 // Communication setup
 SoftwareSerial serial(D2, D3);      // For data transmission
@@ -27,12 +37,14 @@ const char* password = "00000000";
 bool wifiConnected = false;
 unsigned long previousWiFiCheck = 0;
 const long WIFI_CHECK_INTERVAL = 14000;
+const long RTC_SYNC_INTERVAL = 43200000; // Sync RTC every 12 hours
+unsigned long lastRTCSync = 0;
 
 // File and timing
-char filename[25] = "/mesinmf.csv";
+char filename[25] = "mufsin/.csv";
 unsigned long previousMillis = 0;
 unsigned long previousMillisSensor = 0;
-const long INTERVAL = 17000;        // Interval kirim data SD
+const long INTERVAL = 10000;        // Interval kirim data SD
 const long SENSOR_INTERVAL = 30000; // Interval baca sensor
 
 // Display timing
@@ -43,32 +55,38 @@ bool screenOn = true;
 // FIFO constants
 const int MAX_DATA_ROWS = 100;
 
-typedef struct {
-    float V;
-    float F;
-} READING;
-
-// Add RTC object
-RTC_DS3231 rtc;
-
-// Add NTP settings
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 25200); // UTC +7 offset (7*3600)
-unsigned long lastNTPSync = 0;
-const long NTP_SYNC_INTERVAL = 3600000; // Sync every hour
-
-// Function declarations
-void checkWiFiConnection();
-int countDataLines();
-void updateDisplay(float temperature, float humidity, float voltage, float frequency, bool modbusOK, bool wifiOK, bool sensorOK);
-void setupDisplay();
-void syncTimeFromNTP();
+void syncRTC() {
+    if (WiFi.status() == WL_CONNECTED) {
+        ntp.begin();
+        ntp.update();
+        
+        if (ntp.valid()) {
+            DateTime ntpTime = DateTime(ntp.year(), ntp.month(), ntp.day(),
+                                     ntp.hours(), ntp.minutes(), ntp.seconds());
+            rtc.adjust(ntpTime);
+            rtcSynced = true;
+            Serial.println("RTC synced with NTP server");
+            
+            // Display sync status
+            tft.fillRect(0, 0, 320, 25, TFT_BLACK);
+            tft.setTextColor(TFT_GREEN);
+            tft.setFreeFont(&FreeSans9pt7b);
+            tft.drawString("RTC Synced", 240, 5);
+            delay(1000);
+        } else {
+            Serial.println("Failed to get NTP time");
+        }
+    }
+}
 
 void setup() {
     // Initialize Serial communications
     Serial.begin(115200);
     serial.begin(19200);
     SerialMod.begin(9600);
+    
+    // Initialize RTC
+    rtc.begin();
     
     // Initialize I2C devices
     Wire.begin();
@@ -82,40 +100,42 @@ void setup() {
     }
     Serial.println("SD card initialized.");
     
-    // Initialize WiFi
+    // Initialize Display
+    tft.begin();
+    tft.init();
+    tft.setRotation(3);
+    spr.createSprite(TFT_HEIGHT, TFT_WIDTH);
+    spr.setRotation(3);
+    
+    pinMode(LCD_BACKLIGHT, OUTPUT);
+    digitalWrite(LCD_BACKLIGHT, HIGH);
+    
+    tft.fillScreen(TFT_BLACK);
+    
+    // Initialize WiFi and sync RTC
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
     
-    // Initialize Display
-    setupDisplay();
-    
-    // Initialize RTC with proper error checking and time setting
-    if (!rtc.begin()) {
-        Serial.println("RTC initialization failed!");
-        return;
-    }
-    
-    // Initial NTP sync if WiFi is connected
-    if (WiFi.status() == WL_CONNECTED) {
-        syncTimeFromNTP();
-    }
-    
-    // Uncomment these lines on first upload to set the RTC time
-    // Comment them again after uploading once
-    if (rtc.lostPower()) {
-        Serial.println("RTC lost power, lets set the time!");
-        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-        // rtc.adjust(DateTime(2024, 1, 21, 15, 30, 0)); // Or set manual time: YY,MM,DD,HH,MM,SS
-    }
-    
-    // Display initial WiFi scanning message
-    tft.fillScreen(TFT_BLACK);
+    // Display WiFi connecting message
     tft.setFreeFont(&FreeSansOblique12pt7b);
     tft.println(" ");
-    tft.drawString("Scanning Network!", 8, 5);
-    delay(1000);
+    tft.drawString("Connecting to WiFi...", 8, 5);
     
-    // Scan and display available networks
+    // Wait for WiFi connection
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiConnected = true;
+        tft.fillScreen(TFT_BLACK);
+        tft.drawString("Syncing RTC...", 8, 5);
+        syncRTC();
+    }
+    
+    // Display network scan
     int n = WiFi.scanNetworks();
     tft.fillScreen(TFT_BLACK);
     tft.setFreeFont(&FreeSans9pt7b);
@@ -133,12 +153,17 @@ void setup() {
 void loop() {
     unsigned long currentMillis = millis();
     
+    // Periodic RTC sync if WiFi is connected
+    if (wifiConnected && (currentMillis - lastRTCSync >= RTC_SYNC_INTERVAL || !rtcSynced)) {
+        syncRTC();
+        lastRTCSync = currentMillis;
+    }
+    
     // Check backlight timer
     if (screenOn && currentMillis - previousDisplayMillis >= DISPLAY_INTERVAL) {
         previousDisplayMillis = currentMillis;
         screenOn = false;
         digitalWrite(LCD_BACKLIGHT, LOW);
-        Serial.println("Display off");
     }
     
     // Check WiFi connection
@@ -147,22 +172,9 @@ void loop() {
         checkWiFiConnection();
     }
     
-    // Add NTP sync check
-    if (wifiConnected && (currentMillis - lastNTPSync >= NTP_SYNC_INTERVAL)) {
-        lastNTPSync = currentMillis;
-        syncTimeFromNTP();
-    }
-    
     // Read sensors and update display
     if (currentMillis - previousMillisSensor >= SENSOR_INTERVAL) {
         previousMillisSensor = currentMillis;
-        
-        // Get current timestamp - modified format
-        DateTime now = rtc.now();
-        char timestamp[20];
-        sprintf(timestamp, "%04d%02d%02d%02d%02d%02d",
-                now.year(), now.month(), now.day(),
-                now.hour(), now.minute(), now.second());
         
         // Read SHT31 sensor
         sht.read();
@@ -170,47 +182,48 @@ void loop() {
         float humidity = sht.getHumidity();
         
         // Read Modbus
-        READING r;
+        float voltage = 0;
+        float frequency = 0;
         uint8_t result = node.readHoldingRegisters(0002, 10);
         if (result == node.ku8MBSuccess) {
-            r.V = (float)node.getResponseBuffer(0x00) / 100;
-            r.F = (float)node.getResponseBuffer(0x09) / 100;
-        } else {
-            r.V = 0;
-            r.F = 0;
+            voltage = (float)node.getResponseBuffer(0x00) / 100;
+            frequency = (float)node.getResponseBuffer(0x09) / 100;
         }
         
         // Update display
         bool modbusOK = (result == node.ku8MBSuccess);
         bool sensorOK = (humidity != 0);
-        updateDisplay(temperature, humidity, r.V, r.F, modbusOK, wifiConnected, sensorOK);
-        
+        updateDisplay(temperature, humidity, voltage, frequency, modbusOK, wifiConnected, sensorOK);
+
+        // Get current timestamp from RTC
+        DateTime now = rtc.now();
+        char timestamp[20];
+        snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02d %02d:%02d:%02d",
+                 now.year(), now.month(), now.day(), 
+                 now.hour(), now.minute(), now.second());
+
         // Handle data storage and transmission
         if (!wifiConnected) {
-            // Implement FIFO for backup
-            int currentLines = countDataLines();
-            
+            // Save to SD card
             if (!SD.exists(filename)) {
                 File headerFile = SD.open(filename, FILE_WRITE);
                 if (headerFile) {
-                    headerFile.println("Temperature;Humidity;Voltage;Frequency;Timestamp");
+                    headerFile.println("Timestamp;Temperature;Humidity;Voltage;Frequency;RecordTime");
                     headerFile.close();
                 }
             }
-            
-            // FIFO implementation with timestamp
+
+            int currentLines = countDataLines();
             if (currentLines >= MAX_DATA_ROWS) {
+                // Implement FIFO
                 File readFile = SD.open(filename);
                 String header = readFile.readStringUntil('\n');
                 String remainingData = header + "\n";
-                
                 readFile.readStringUntil('\n'); // Skip first data line
                 
                 while (readFile.available()) {
                     remainingData += readFile.readStringUntil('\n');
-                    if (readFile.available()) {
-                        remainingData += '\n';
-                    }
+                    if (readFile.available()) remainingData += '\n';
                 }
                 readFile.close();
                 
@@ -218,109 +231,37 @@ void loop() {
                 File writeFile = SD.open(filename, FILE_WRITE);
                 if (writeFile) {
                     writeFile.print(remainingData);
-                    writeFile.printf("%.2f;%.2f;%.2f;%.2f;%s\n",
-                                   temperature, humidity, r.V, r.F, timestamp);
+                    char buffer[128];
+                    snprintf(buffer, sizeof(buffer), 
+                             "%s;%.2f;%.2f;%.2f;%.2f;%s\n",
+                             "backup", temperature, humidity, voltage, frequency, timestamp);
+                    writeFile.print(buffer);
                     writeFile.close();
                 }
             } else {
                 File dataFile = SD.open(filename, FILE_WRITE);
                 if (dataFile) {
-                    dataFile.printf("%.2f;%.2f;%.2f;%.2f;%s\n",
-                                  temperature, humidity, r.V, r.F, timestamp);
+                    char buffer[128];
+                    snprintf(buffer, sizeof(buffer), 
+                             "%s;%.2f;%.2f;%.2f;%.2f;%s\n",
+                             "backup", temperature, humidity, voltage, frequency, timestamp);
+                    dataFile.print(buffer);
                     dataFile.close();
                 }
             }
-            Serial.println("Data backed up to SD (FIFO)");
+            Serial.println("Data backed up to SD");
         } else {
-            // Modified direct data transmission with correct order
+            // Send data directly via serial
             String datakirim = String("1#") + 
+                             String(voltage, 2) + "#" +
+                             String(frequency, 2) + "#" +
                              String(temperature, 2) + "#" +
                              String(humidity, 2) + "#" +
-                             String(r.V, 2) + "#" +
-                             String(r.F, 2) + "#" +
                              String(timestamp);
             serial.println(datakirim);
-            Serial.println("Data sent directly");
+            Serial.println("Data sent: " + datakirim);
         }
     }
-    
-    // Process backed up data when WiFi is available
-    if (currentMillis - previousMillis >= INTERVAL && wifiConnected) {
-        previousMillis = currentMillis;
-        
-        File readFile = SD.open(filename);
-        if (readFile && readFile.available()) {
-            String header = readFile.readStringUntil('\n');
-            String remainingData = header + "\n";
-            bool dataSent = false;
-            
-            if (readFile.available()) {
-                String line = readFile.readStringUntil('\n');
-                if (line.length() > 0) {
-                    int semicolons = 0;
-                    for (unsigned int i = 0; i < line.length(); i++) {
-                        if (line[i] == ';') semicolons++;
-                    }
-                    
-                    if (semicolons == 4) {
-                        int pos1 = line.indexOf(';');
-                        int pos2 = line.indexOf(';', pos1 + 1);
-                        int pos3 = line.indexOf(';', pos2 + 1);
-                        int pos4 = line.indexOf(';', pos3 + 1);
-                        
-                        String temp = line.substring(0, pos1);
-                        String hum = line.substring(pos1 + 1, pos2);
-                        String volt = line.substring(pos2 + 1, pos3);
-                        String freq = line.substring(pos3 + 1, pos4);
-                        String timestamp = line.substring(pos4 + 1);
-                        
-                        temp.trim(); hum.trim(); volt.trim(); freq.trim(); timestamp.trim();
-                        
-                        String datakirim = String("1#") + 
-                                         temp + "#" + 
-                                         hum + "#" + 
-                                         volt + "#" + 
-                                         freq + "#" + 
-                                         timestamp;
-                        
-                        serial.println(datakirim);
-                        dataSent = true;
-                    }
-                }
-            }
-            
-            while (readFile.available()) {
-                remainingData += readFile.readStringUntil('\n');
-                if (readFile.available()) {
-                    remainingData += '\n';
-                }
-            }
-            
-            readFile.close();
-            
-            if (dataSent) {
-                SD.remove(filename);
-                File writeFile = SD.open(filename, FILE_WRITE);
-                if (writeFile) {
-                    writeFile.print(remainingData);
-                    writeFile.close();
-                }
-            }
-        }
-    }
-}
-
-void setupDisplay() {
-    tft.begin();
-    tft.init();
-    tft.setRotation(3);
-    spr.createSprite(TFT_HEIGHT, TFT_WIDTH);
-    spr.setRotation(3);
-    
-    pinMode(LCD_BACKLIGHT, OUTPUT);
-    digitalWrite(LCD_BACKLIGHT, HIGH);
-    
-    tft.fillScreen(TFT_BLACK);
 }
 
 void updateDisplay(float temperature, float humidity, float voltage, float frequency, 
@@ -425,26 +366,14 @@ void checkWiFiConnection() {
 
 int countDataLines() {
     File readFile = SD.open(filename);
-    int lineCount = -1;  // -1 karena baris pertama adalah header
+    int lineCount = -1;  // -1 to account for header line
     
     if (readFile) {
         while (readFile.available()) {
-            String line = readFile.readStringUntil('\n');
+            readFile.readStringUntil('\n');
             lineCount++;
         }
         readFile.close();
     }
     return lineCount;
-}
-
-void syncTimeFromNTP() {
-    if (wifiConnected) {
-        timeClient.begin();
-        if (timeClient.update()) {
-            time_t epochTime = timeClient.getEpochTime();
-            rtc.adjust(DateTime(epochTime));
-            Serial.println("RTC synced with NTP");
-        }
-        timeClient.end();
-    }
 }
