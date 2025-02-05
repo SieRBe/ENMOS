@@ -4,8 +4,8 @@
 #include <AsyncMqttClient.h>
 
 // WiFi credentials
-#define WIFI_SSID "lime"
-#define WIFI_PASSWORD "00000000"
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
 #define MAX_WIFI_RECONNECT_ATTEMPTS 10
 #define WIFI_RECONNECT_DELAY 1000 // 1 detik
 
