@@ -33,6 +33,10 @@ unsigned long previousMillis = 0;
 unsigned long previousMillisSensor = 0;
 const long INTERVAL = 17000;        // Interval kirim data SD
 const long SENSOR_INTERVAL = 30000; // Interval baca sensor
+const int TRANSMISSION_DELAY = 1000; // Delay between transmissions in milliseconds
+bool isTransmittingBackup = false;
+File backupFile;
+String backupHeader;
 
 // Display timing
 unsigned long previousDisplayMillis = 0;
@@ -354,88 +358,77 @@ void loop() {
         }
     }
     
-  // Modifikasi bagian proses backup data di loop() 
-// Ganti bagian ini:
-if (currentMillis - previousMillis >= INTERVAL && wifiConnected) {
+   if (currentMillis - previousMillis >= INTERVAL && wifiConnected) {
     previousMillis = currentMillis;
-    if (SD.exists(filename)) {
-        File readFile = SD.open(filename);
-        if (readFile && readFile.available()) {
-            String header = readFile.readStringUntil('\n');
-            bool anyDataSent = false;
+    
+    // Start new backup transmission if not already transmitting
+    if (!isTransmittingBackup && SD.exists(filename)) {
+        backupFile = SD.open(filename);
+        if (backupFile && backupFile.available()) {
+            isTransmittingBackup = true;
+            backupHeader = backupFile.readStringUntil('\n');
+            Serial.println("Starting backup transmission");
+        }
+    }
+    
+    // Continue existing transmission
+    if (isTransmittingBackup && backupFile) {
+        static int linesSent = 0;
+        static String tempData = "";
+        
+        // Process one line at a time
+        if (backupFile.available()) {
+            String line = backupFile.readStringUntil('\n');
+            line.trim();
             
-            // Tambahkan penghitung baris
-            int totalLines = 0;
-            int sentLines = 0;
-            
-            // Pertama hitung total baris data
-            while (readFile.available()) {
-                String line = readFile.readStringUntil('\n');
-                line.trim();
-                if (line.length() > 0) {
-                    totalLines++;
-                }
-            }
-            
-            // Reset posisi file untuk membaca dari awal
-            readFile.seek(0);
-            // Skip header
-            readFile.readStringUntil('\n');
-            
-            // Sekarang proses pengiriman data
-            while (readFile.available()) {
-                String line = readFile.readStringUntil('\n');
-                line.trim();
+            if (line.length() > 0) {
+                // Parse and send data
+                int pos1 = line.indexOf(';');
+                int pos2 = line.indexOf(';', pos1 + 1);
+                int pos3 = line.indexOf(';', pos2 + 1);
+                int pos4 = line.indexOf(';', pos3 + 1);
                 
-                if (line.length() > 0) {
-                    // Parse dan kirim data
-                    int pos1 = line.indexOf(';');
-                    int pos2 = line.indexOf(';', pos1 + 1);
-                    int pos3 = line.indexOf(';', pos2 + 1);
-                    int pos4 = line.indexOf(';', pos3 + 1);
+                if (pos1 > 0 && pos2 > pos1 && pos3 > pos2 && pos4 > pos3) {
+                    String datakirim = String("1#") + 
+                                     line.substring(0, pos1) + "#" + 
+                                     line.substring(pos1 + 1, pos2) + "#" + 
+                                     line.substring(pos2 + 1, pos3) + "#" + 
+                                     line.substring(pos3 + 1, pos4) + "#" + 
+                                     line.substring(pos4 + 1);
                     
-                    if (pos1 > 0 && pos2 > pos1 && pos3 > pos2 && pos4 > pos3) {
-                        String datakirim = String("1#") + 
-                                         line.substring(0, pos1) + "#" + 
-                                         line.substring(pos1 + 1, pos2) + "#" + 
-                                         line.substring(pos2 + 1, pos3) + "#" + 
-                                         line.substring(pos3 + 1, pos4) + "#" + 
-                                         line.substring(pos4 + 1);
-                        
-                        serial.println(datakirim);
-                        Serial.println("Sent backup: " + datakirim);
-                        anyDataSent = true;
-                        sentLines++;
-                        delay(100);
-                    }
+                    serial.println(datakirim);
+                    Serial.println("Sent backup: " + datakirim);
+                    linesSent++;
+                    
+                    // Store the line in case we need to preserve it
+                    tempData += line + "\n";
                 }
+                delay(TRANSMISSION_DELAY); // Add delay between transmissions
             }
-            readFile.close();
+        } else {
+            // End of file reached
+            backupFile.close();
             
-            // Cetak informasi debug
-            Serial.printf("Total lines: %d, Sent lines: %d\n", totalLines, sentLines);
+            // Reset file with header and any unconfirmed data
+            SD.remove(filename);
+            File writeFile = SD.open(filename, FILE_WRITE);
+            if (writeFile) {
+                writeFile.println(backupHeader);
+                // If needed, you could write back unconfirmed data here:
+                // writeFile.print(tempData);
+                writeFile.close();
+                verifyCSVFormat();
+                Serial.printf("Backup transmission complete. Sent %d lines\n", linesSent);
+            }
             
-            // Reset file hanya jika semua data telah terkirim
-            if (anyDataSent && sentLines == totalLines) {
-                SD.remove(filename);
-                File writeFile = SD.open(filename, FILE_WRITE);
-                if (writeFile) {
-                    writeFile.println("Temperature;Humidity;Voltage;Frequency;Timestamp");
-                    writeFile.flush();
-                    writeFile.close();
-                    verifyCSVFormat();
-                    Serial.println("Backup file reset with header");
-                } else {
-                    Serial.println("Failed to reset backup file!");
-                }
-            } else {
-                Serial.println("Not all data was sent, keeping backup file");
-           }
-         }
-       }
-     }
-   }
-
+            // Reset transmission state
+            isTransmittingBackup = false;
+            linesSent = 0;
+            tempData = "";
+        }
+    }
+  }
+}
 
 void setupDisplay() {
     tft.begin();
