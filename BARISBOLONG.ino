@@ -28,7 +28,7 @@ unsigned long previousWiFiCheck = 0;
 const long WIFI_CHECK_INTERVAL = 14000;
 
 // File and timing
-char filename[25] = "/teteha.csv";
+char filename[25] = "/epul.csv";
 unsigned long previousMillis = 0;
 unsigned long previousMillisSensor = 0;
 const long INTERVAL = 17000;        // Interval kirim data SD
@@ -354,59 +354,88 @@ void loop() {
         }
     }
     
-    // Process backed up data when online
-    if (currentMillis - previousMillis >= INTERVAL && wifiConnected) {
-        previousMillis = currentMillis;
-        if (SD.exists(filename)) {
-            File readFile = SD.open(filename);
-            if (readFile && readFile.available()) {
-                String header = readFile.readStringUntil('\n');
-                bool anyDataSent = false;
-                
-                while (readFile.available()) {
-                    String line = readFile.readStringUntil('\n');
-                    line.trim();
-                    
-                    if (line.length() > 0) {
-                        // Parse and send data
-                        int pos1 = line.indexOf(';');
-                        int pos2 = line.indexOf(';', pos1 + 1);
-                        int pos3 = line.indexOf(';', pos2 + 1);
-                        int pos4 = line.indexOf(';', pos3 + 1);
-                        
-                        if (pos1 > 0 && pos2 > pos1 && pos3 > pos2 && pos4 > pos3) {
-                            String datakirim = String("1#") + 
-                                             line.substring(0, pos1) + "#" + 
-                                             line.substring(pos1 + 1, pos2) + "#" + 
-                                             line.substring(pos2 + 1, pos3) + "#" + 
-                                             line.substring(pos3 + 1, pos4) + "#" + 
-                                             line.substring(pos4 + 1);
-                            
-                            serial.println(datakirim);
-                            Serial.println("Sent backup: " + datakirim);
-                            anyDataSent = true;
-                            delay(100);
-                        }
-                    }
+  // Modifikasi bagian proses backup data di loop() 
+// Ganti bagian ini:
+if (currentMillis - previousMillis >= INTERVAL && wifiConnected) {
+    previousMillis = currentMillis;
+    if (SD.exists(filename)) {
+        File readFile = SD.open(filename);
+        if (readFile && readFile.available()) {
+            String header = readFile.readStringUntil('\n');
+            bool anyDataSent = false;
+            
+            // Tambahkan penghitung baris
+            int totalLines = 0;
+            int sentLines = 0;
+            
+            // Pertama hitung total baris data
+            while (readFile.available()) {
+                String line = readFile.readStringUntil('\n');
+                line.trim();
+                if (line.length() > 0) {
+                    totalLines++;
                 }
-                readFile.close();
+            }
+            
+            // Reset posisi file untuk membaca dari awal
+            readFile.seek(0);
+            // Skip header
+            readFile.readStringUntil('\n');
+            
+            // Sekarang proses pengiriman data
+            while (readFile.available()) {
+                String line = readFile.readStringUntil('\n');
+                line.trim();
                 
-                // Reset file after sending all data
-                if (anyDataSent) {
-                    SD.remove(filename);
-                    File writeFile = SD.open(filename, FILE_WRITE);
-                    if (writeFile) {
-                        writeFile.println("Temperature;Humidity;Voltage;Frequency;Timestamp");
-                        writeFile.flush();
-                        writeFile.close();
-                        verifyCSVFormat();
-                        Serial.println("Backup file reset with header");
+                if (line.length() > 0) {
+                    // Parse dan kirim data
+                    int pos1 = line.indexOf(';');
+                    int pos2 = line.indexOf(';', pos1 + 1);
+                    int pos3 = line.indexOf(';', pos2 + 1);
+                    int pos4 = line.indexOf(';', pos3 + 1);
+                    
+                    if (pos1 > 0 && pos2 > pos1 && pos3 > pos2 && pos4 > pos3) {
+                        String datakirim = String("1#") + 
+                                         line.substring(0, pos1) + "#" + 
+                                         line.substring(pos1 + 1, pos2) + "#" + 
+                                         line.substring(pos2 + 1, pos3) + "#" + 
+                                         line.substring(pos3 + 1, pos4) + "#" + 
+                                         line.substring(pos4 + 1);
+                        
+                        serial.println(datakirim);
+                        Serial.println("Sent backup: " + datakirim);
+                        anyDataSent = true;
+                        sentLines++;
+                        delay(100);
                     }
                 }
             }
-        }
-    }
-}
+            readFile.close();
+            
+            // Cetak informasi debug
+            Serial.printf("Total lines: %d, Sent lines: %d\n", totalLines, sentLines);
+            
+            // Reset file hanya jika semua data telah terkirim
+            if (anyDataSent && sentLines == totalLines) {
+                SD.remove(filename);
+                File writeFile = SD.open(filename, FILE_WRITE);
+                if (writeFile) {
+                    writeFile.println("Temperature;Humidity;Voltage;Frequency;Timestamp");
+                    writeFile.flush();
+                    writeFile.close();
+                    verifyCSVFormat();
+                    Serial.println("Backup file reset with header");
+                } else {
+                    Serial.println("Failed to reset backup file!");
+                }
+            } else {
+                Serial.println("Not all data was sent, keeping backup file");
+           }
+         }
+       }
+     }
+   }
+
 
 void setupDisplay() {
     tft.begin();
