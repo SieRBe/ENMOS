@@ -92,41 +92,35 @@ bool verifyCSVFormat() {
 
 // Function to safely write data to CSV
 void writeToCSV(float temperature, float humidity, float voltage, float frequency, unsigned long timestamp) {
-    // First, read the header
-    String header = "";
-    if (SD.exists(filename)) {
-        File readFile = SD.open(filename);
-        if (readFile) {
-            header = readFile.readStringUntil('\n');
-            readFile.close();
-        }
+    String header = "Temperature;Humidity;Voltage;Frequency;Timestamp";
+    String tempFileName = "/temp.csv";
+    
+    // Create temporary file for writing new data
+    File tempFile = SD.open(tempFileName, FILE_WRITE);
+    if (!tempFile) {
+        Serial.println("Error creating temp file!");
+        return;
     }
-
-    // Remove existing file and create new one
+    
+    // Write header to temp file
+    tempFile.println(header);
+    
+    // Write the new data
+    tempFile.printf("%.2f;%.2f;%.2f;%.2f;%lu\n",
+                   temperature, humidity, voltage, frequency, timestamp);
+    
+    tempFile.close();
+    
+    // Remove original file if it exists
     if (SD.exists(filename)) {
         SD.remove(filename);
     }
-
-    // Create new file and write header
-    File dataFile = SD.open(filename, FILE_WRITE);
-    if (dataFile) {
-        // Write header if it exists, otherwise create new header
-        if (header.length() > 0) {
-            dataFile.println(header);
-        } else {
-            dataFile.println("Temperature;Humidity;Voltage;Frequency;Timestamp");
-        }
-
-        // Write the new data
-        dataFile.printf("%.2f;%.2f;%.2f;%.2f;%lu\n",
-                       temperature, humidity, voltage, frequency, timestamp);
-        
-        dataFile.flush();
-        dataFile.close();
-        
-        Serial.println("Data written to CSV successfully");
+    
+    // Rename temp file to original filename
+    if (SD.rename(tempFileName, filename)) {
+        Serial.println("Data written successfully");
     } else {
-        Serial.println("Error opening file for writing!");
+        Serial.println("Error during file rename!");
     }
 }
 
