@@ -92,19 +92,19 @@ bool verifyCSVFormat() {
 
 // Function to safely write data to CSV
 void writeToCSV(float temperature, float humidity, float voltage, float frequency, unsigned long timestamp) {
-    bool fileExists = SD.exists(filename);
     File dataFile = SD.open(filename, FILE_WRITE);
     if (dataFile) {
-        if (!fileExists) {
-            // If new file, write header without newline
-            dataFile.print("Temperature;Humidity;Voltage;Frequency;Timestamp");
+        // Cek apakah file kosong
+        if (dataFile.size() == 0) {
+            // Tulis header jika file kosong
+            dataFile.println("Temperature;Humidity;Voltage;Frequency;Timestamp");
         } else {
-            // If existing file, seek to end
+            // File sudah ada, langsung ke akhir file
             dataFile.seek(dataFile.size());
         }
         
-        // Add new data with newline at start
-        dataFile.printf("\n%.2f;%.2f;%.2f;%.2f;%lu",
+        // Tulis data baru
+        dataFile.printf("%.2f;%.2f;%.2f;%.2f;%lu\n",
                      temperature, humidity, voltage, frequency, timestamp);
         dataFile.close();
         Serial.println("Data written to CSV");
