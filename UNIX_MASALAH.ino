@@ -28,7 +28,7 @@ unsigned long previousWiFiCheck = 0;
 const long WIFI_CHECK_INTERVAL = 14000;
 
 // File and timing
-char filename[25] = "/epul.csv";
+char filename[25] = "/IPOOL.csv";
 unsigned long previousMillis = 0;
 unsigned long previousMillisSensor = 0;
 unsigned long lastTimestamp = 0;
