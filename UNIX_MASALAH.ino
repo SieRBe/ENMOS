@@ -428,12 +428,19 @@ void loop() {
             File writeFile = SD.open(filename, FILE_WRITE);
             if (writeFile) {
                 writeFile.print(backupHeader);  // Write header without newline
-                if (tempData.length() > 0) {  // Only write data if exists
-                    writeFile.print("\n" + tempData);  // Add newline before data
-                }
                 writeFile.close();
-                verifyCSVFormat();
-                Serial.printf("Backup transmission complete. Sent %d lines\n", linesSent);
+                
+                // Buat file baru sehingga pointer ada di posisi yang benar
+                writeFile = SD.open(filename, FILE_WRITE);
+                if (writeFile) {
+                    writeFile.seek(writeFile.size());
+                    if (tempData.length() > 0) {  // Only write data if exists
+                        writeFile.print("\n" + tempData.substring(0, tempData.length()-1));  // Remove last newline if exists
+                    }
+                    writeFile.close();
+                    verifyCSVFormat();
+                    Serial.printf("Backup transmission complete. Sent %d lines\n", linesSent);
+                }
             }
             
             // Reset transmission state
