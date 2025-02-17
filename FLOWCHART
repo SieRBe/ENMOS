@@ -1,0 +1,52 @@
+flowchart TD
+    A[Start] --> B{WiFi Connected?}
+    
+    %% Online Path
+    B -->|Yes| C[Read Sensors]
+    C --> D[Get Timestamp]
+    D --> E[Format Data]
+    E --> F[Send Data Direct]
+    F --> G{Backup File Exists?}
+    G -->|Yes| H[Read First Line]
+    H --> I[Send Backup Data]
+    I --> J[Delete Sent Line]
+    J --> K{More Data?}
+    K -->|Yes| H
+    K -->|No| L[Wait Interval]
+    G -->|No| L
+    
+    %% Offline Path
+    B -->|No| M[Read Sensors]
+    M --> N[Get Timestamp]
+    N --> O[Format Data]
+    O --> P[Check CSV Size]
+    P --> Q{Max Size Reached?}
+    Q -->|Yes| R[Delete Oldest Data]
+    R --> S[Save New Data]
+    Q -->|No| S
+    S --> L
+    
+    %% Common End
+    L --> B
+    
+    %% Subprocesses
+    subgraph "Sensor Reading"
+        direction LR
+        M1[Read Temperature] --> M2[Read Humidity]
+        M2 --> M3[Read Voltage]
+        M3 --> M4[Read Frequency]
+    end
+    
+    subgraph "Data Format"
+        direction LR
+        E1[Format CSV] --> E2[Add Timestamp]
+    end
+    
+    %% Styling
+    classDef process fill:#90EE90,stroke:#333,stroke-width:2px;
+    classDef decision fill:#FFB6C1,stroke:#333,stroke-width:2px;
+    classDef storage fill:#87CEEB,stroke:#333,stroke-width:2px;
+    
+    class C,M,D,N,E,O,F,I,J,R,S process;
+    class B,G,K,Q decision;
+    class H storage;
